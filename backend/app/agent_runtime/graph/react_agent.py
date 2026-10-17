@@ -1003,9 +1003,27 @@ def create_react_agent(
         from app.plugins.runtime import dispatch as plugin_dispatch, model_messages
         plugin_runtime = dict(effective_runtime_state or runtime_state or {})
         messages = await model_messages(messages, db_session, runtime=plugin_runtime)
-        await plugin_dispatch("turn.step", {"agent": react_config.name,
+        invocation_model = bound_model or model
+        if state["iteration_count"] == 0:
+            changed = False
+            for tool in tools:
+                described = await plugin_dispatch("tool.describe", {"tool": tool.name, "description":tool.description}, db_session, runtime=plugin_runtime)
+                if described.get("description") != tool.description:
+                    tool.description = str(described["description"])
+                    changed = True
+            if changed and model:
+                invocation_model = model.bind_tools(tools)
+        step_event = await plugin_dispatch("turn.step", {"agent": react_config.name,
                                             "iteration": state["iteration_count"]},
                               db_session, runtime=plugin_runtime)
+        if step_event.get("model"):
+            if db_session is None:
+                raise ValueError("Model-routing hooks require a runtime database session")
+            from app.api.routers.agent_runtime import _resolve_model_config
+            from app.models.clients.model_factory import create_chat_model, ModelConfig
+            from app.agent_runtime.model_config import to_client_model_config
+            replacement = await _resolve_model_config(db_session, step_event["model"])
+            invocation_model = cast(Any, create_chat_model(ModelConfig(**to_client_model_config(replacement)))).bind_tools(tools)
         audit = await _start_audit(configurable, messages)
         active_audit = audit
         try:
@@ -1015,7 +1033,7 @@ def create_react_agent(
                 else None
             )
             response = await invoke_model_with_retry(
-                bound_model or model,
+                invocation_model,
                 messages,
                 invoke=_invoke_model,
                 settings=load_llm_invoke_settings(),
