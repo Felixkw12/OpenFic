@@ -50,6 +50,7 @@ from app.api.routers import (
     retrieval_index,
     runtime_config,
     settings,
+    tunnels,
     skill_reference_docs,
     skills,
     tasks,
@@ -57,6 +58,7 @@ from app.api.routers import (
     world_info,
     world_info_entries,
 )
+from app.tunnels import TUNNEL_STATUS_EVENT, TunnelManager
 from app.auth import AuthMiddleware, AuthService
 from app.plugins.host import PluginHost
 from app.settings import BACKEND_DATA_DIR
@@ -77,6 +79,7 @@ from app.agent_runtime.runner.checkpointer import (
     full_vacuum_checkpoint_database,
     get_checkpointer,
     init_checkpointer,
+    is_postgresql_checkpointer,
     migrate_checkpoint_database_to_incremental,
     needs_incremental_auto_vacuum_migration,
     prune_reachable_checkpoints,
@@ -96,7 +99,7 @@ from app.models.builtin import seed_builtin_models
 from app.models.catalog import ModelProviderCatalogService
 from app.maintenance import maintenance_state
 from app.settings import settings as app_settings
-from app.socket import init_socketio
+from app.socket import emit, init_socketio
 from app.storage.database import close_db, create_session, init_db, vacuum_database_if_needed
 from app.storage.repos import revision_repo, setting_repo
 from app.storage.services import task_service
@@ -108,6 +111,10 @@ ANSI_BOLD = "\033[1m"
 ANSI_GREEN = "\033[32m"
 ANSI_BLUE = "\033[34m"
 ANSI_RESET = "\033[0m"
+
+
+async def emit_tunnel_status(snapshot: dict[str, object]) -> None:
+    await emit(TUNNEL_STATUS_EVENT, snapshot)
 
 
 def _resolve_frontend_dist_dir() -> Path:
@@ -272,7 +279,14 @@ def _update_checkpoint_maintenance_progress(
 async def _run_startup_maintenance() -> None:
     global _vacuum_started_at, _migrate_started_at
     maintenance_state.start()
-    logger.info("Local database maintenance started")
+    logger.info(
+        f"Local database maintenance started backend={app_settings.database_backend}"
+    )
+    try:
+        await init_checkpointer()
+    except BaseException:
+        await close_checkpointer()
+        raise
     try:
         maintenance_state.update(
             phase="pruning",
@@ -287,49 +301,54 @@ async def _run_startup_maintenance() -> None:
             deleted_rows=deleted_rows,
         )
 
-        await close_checkpointer()
+        if not is_postgresql_checkpointer():
+            await close_checkpointer()
 
-        # 阶段 1：必要时迁移到 INCREMENTAL（普通 VACUUM，set_progress_handler 监控 VM 操作数）
-        if await needs_incremental_auto_vacuum_migration():
-            maintenance_state.update(
-                phase="migrating",
-                message="Migrating checkpoint database to incremental auto-vacuum.",
-                progress=None,
-            )
-            logger.info("Migrating checkpoint database to incremental auto-vacuum")
-            _migrate_started_at = time.monotonic()
-            await migrate_checkpoint_database_to_incremental(
-                progress_callback=_update_checkpoint_maintenance_progress,
-            )
-            logger.info(
-                f"Migrated checkpoint database to incremental auto-vacuum in "
-                f"{time.monotonic() - _migrate_started_at:.1f}s"
-            )
-            _migrate_started_at = None
-        else:
-            logger.info("Checkpoint database already uses incremental auto-vacuum, skipping migration")
+            # 阶段 1：必要时迁移到 INCREMENTAL（普通 VACUUM，set_progress_handler 监控 VM 操作数）
+            if await needs_incremental_auto_vacuum_migration():
+                maintenance_state.update(
+                    phase="migrating",
+                    message="Migrating checkpoint database to incremental auto-vacuum.",
+                    progress=None,
+                )
+                logger.info("Migrating checkpoint database to incremental auto-vacuum")
+                _migrate_started_at = time.monotonic()
+                await migrate_checkpoint_database_to_incremental(
+                    progress_callback=_update_checkpoint_maintenance_progress,
+                )
+                logger.info(
+                    f"Migrated checkpoint database to incremental auto-vacuum in "
+                    f"{time.monotonic() - _migrate_started_at:.1f}s"
+                )
+                _migrate_started_at = None
+            else:
+                logger.info("Checkpoint database already uses incremental auto-vacuum, skipping migration")
 
-        # 阶段 2：空页达到阈值才执行 VACUUM INTO 回收
-        free_bytes, live_bytes = await checkpoint_free_page_bytes()
-        free_ratio = free_bytes / live_bytes if live_bytes > 0 else 0.0
-        should_vacuum = free_bytes > 1024**3 or free_ratio > 0.3
-        if should_vacuum:
-            maintenance_state.update(
-                phase="vacuuming",
-                message="Reclaiming freed checkpoint pages.",
-                progress=None,
-            )
-            logger.info(
-                f"Reclaiming checkpoint free space: {free_bytes / (1024**3):.1f}GB free "
-                f"({free_ratio * 100:.0f}% of live data)"
-            )
-            await full_vacuum_checkpoint_database(
-                progress_callback=_update_checkpoint_maintenance_progress,
-            )
+            # 阶段 2：空页达到阈值才执行 VACUUM INTO 回收
+            free_bytes, live_bytes = await checkpoint_free_page_bytes()
+            free_ratio = free_bytes / live_bytes if live_bytes > 0 else 0.0
+            should_vacuum = free_bytes > 1024**3 or free_ratio > 0.3
+            if should_vacuum:
+                maintenance_state.update(
+                    phase="vacuuming",
+                    message="Reclaiming freed checkpoint pages.",
+                    progress=None,
+                )
+                logger.info(
+                    f"Reclaiming checkpoint free space: {free_bytes / (1024**3):.1f}GB free "
+                    f"({free_ratio * 100:.0f}% of live data)"
+                )
+                await full_vacuum_checkpoint_database(
+                    progress_callback=_update_checkpoint_maintenance_progress,
+                )
+            else:
+                logger.info(
+                    f"Checkpoint free space below threshold, skipping vacuum "
+                    f"({free_bytes / (1024**3):.1f}GB free, {free_ratio * 100:.0f}% of live data)"
+                )
         else:
             logger.info(
-                f"Checkpoint free space below threshold, skipping vacuum "
-                f"({free_bytes / (1024**3):.1f}GB free, {free_ratio * 100:.0f}% of live data)"
+                "PostgreSQL checkpoint storage selected; skipping SQLite space reclamation"
             )
 
         maintenance_state.update(
@@ -376,8 +395,8 @@ def _friendly_maintenance_error(exc: Exception) -> str:
 
 async def _restore_checkpointer_and_runtime() -> None:
     """Best-effort recovery so a failed maintenance does not leave the backend degraded."""
+    await init_checkpointer()
     try:
-        await init_checkpointer()
         await start_background_runtime()
     except Exception:
         logger.exception(
@@ -637,7 +656,10 @@ def _print_startup_banner(version: str) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
-    logger.info(f"Starting {app_settings.app_name} v{app_settings.app_version}")
+    logger.info(
+        f"Starting {app_settings.app_name} v{app_settings.app_version} "
+        f"backend={app_settings.database_backend}"
+    )
     await init_db()
     await app.state.plugin_host.start()
     await _load_telemetry_enabled()
@@ -653,7 +675,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _seed_builtin_models()
     await load_audit_details_persistence()
     start_audit_queue()
-    await _run_startup_maintenance()
+    try:
+        await _run_startup_maintenance()
+    except BaseException:
+        try:
+            await stop_audit_queue()
+        finally:
+            try:
+                await close_checkpointer()
+            finally:
+                await close_db()
+        raise
     _print_startup_banner(app_settings.app_version)
     catalog_refresh_task = asyncio.create_task(
         ModelProviderCatalogService().refresh(),
@@ -663,6 +695,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info(f"Shutting down {app_settings.app_name}")
+        await app.state.tunnel_manager.stop()
         if not catalog_refresh_task.done():
             catalog_refresh_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -694,6 +727,8 @@ def create_app() -> FastAPI:
     )
     app.state.auth_service = AuthService(app_settings.auth_password)
     app.state.plugin_host = PluginHost(BACKEND_DATA_DIR / "plugins")
+    app.state.tunnel_manager = TunnelManager(on_status_change=emit_tunnel_status)
+    app.state.tunnel_frontend_available = (FRONTEND_DIST_DIR / "index.html").is_file()
     app.state.catalog_icon_proxy_service = model_icons.CatalogIconProxyService()
 
     install_telemetry_sink()
@@ -725,6 +760,7 @@ def create_app() -> FastAPI:
     app.include_router(world_info.router, prefix=app_settings.api_v1_prefix)
     app.include_router(world_info_entries.router, prefix=app_settings.api_v1_prefix)
     app.include_router(settings.router, prefix=app_settings.api_v1_prefix)
+    app.include_router(tunnels.router, prefix=app_settings.api_v1_prefix)
     app.include_router(import_router.router, prefix=app_settings.api_v1_prefix)
     app.include_router(openai_codex.router, prefix=app_settings.api_v1_prefix)
     app.include_router(model_providers.router, prefix=app_settings.api_v1_prefix)

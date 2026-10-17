@@ -89,10 +89,17 @@ dependencies = [
     "odfpy>=1.4.1",
     "ebooklib>=0.20",
     "extract-msg>=0.56.1",
+    "tornado>=6.5.2",
 ]
 
 [project.scripts]
 openfic = "app.cli:main"
+
+[project.optional-dependencies]
+postgresql = [
+    "langgraph-checkpoint-postgres>=3.1.2",
+    "psycopg[binary]>=3.3.5",
+]
 
 [dependency-groups]
 dev = [
