@@ -49,6 +49,7 @@ from app.api.routers import (
     retrieval_index,
     runtime_config,
     settings,
+    tunnels,
     skill_reference_docs,
     skills,
     tasks,
@@ -56,6 +57,7 @@ from app.api.routers import (
     world_info,
     world_info_entries,
 )
+from app.tunnels import TUNNEL_STATUS_EVENT, TunnelManager
 from app.auth import AuthMiddleware, AuthService
 from app.audit import start_audit_queue, stop_audit_queue
 from app.agent_runtime.persistence.child_runs import cancel_interrupted_child_runs
@@ -94,7 +96,7 @@ from app.models.builtin import seed_builtin_models
 from app.models.catalog import ModelProviderCatalogService
 from app.maintenance import maintenance_state
 from app.settings import settings as app_settings
-from app.socket import init_socketio
+from app.socket import emit, init_socketio
 from app.storage.database import close_db, create_session, init_db, vacuum_database_if_needed
 from app.storage.repos import revision_repo, setting_repo
 from app.storage.services import task_service
@@ -106,6 +108,10 @@ ANSI_BOLD = "\033[1m"
 ANSI_GREEN = "\033[32m"
 ANSI_BLUE = "\033[34m"
 ANSI_RESET = "\033[0m"
+
+
+async def emit_tunnel_status(snapshot: dict[str, object]) -> None:
+    await emit(TUNNEL_STATUS_EVENT, snapshot)
 
 
 def _resolve_frontend_dist_dir() -> Path:
@@ -685,6 +691,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info(f"Shutting down {app_settings.app_name}")
+        await app.state.tunnel_manager.stop()
         if not catalog_refresh_task.done():
             catalog_refresh_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -714,6 +721,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.auth_service = AuthService(app_settings.auth_password)
+    app.state.tunnel_manager = TunnelManager(on_status_change=emit_tunnel_status)
+    app.state.tunnel_frontend_available = (FRONTEND_DIST_DIR / "index.html").is_file()
     app.state.catalog_icon_proxy_service = model_icons.CatalogIconProxyService()
 
     install_telemetry_sink()
@@ -743,6 +752,7 @@ def create_app() -> FastAPI:
     app.include_router(world_info.router, prefix=app_settings.api_v1_prefix)
     app.include_router(world_info_entries.router, prefix=app_settings.api_v1_prefix)
     app.include_router(settings.router, prefix=app_settings.api_v1_prefix)
+    app.include_router(tunnels.router, prefix=app_settings.api_v1_prefix)
     app.include_router(import_router.router, prefix=app_settings.api_v1_prefix)
     app.include_router(openai_codex.router, prefix=app_settings.api_v1_prefix)
     app.include_router(model_providers.router, prefix=app_settings.api_v1_prefix)

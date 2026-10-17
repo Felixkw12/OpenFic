@@ -6,6 +6,7 @@ import {
   Database,
   FileText,
   Globe,
+  Network,
   MessagesSquare,
   Palette,
   Package,
@@ -23,6 +24,7 @@ export type SettingsCategory =
   | "editor"
   | "notifications"
   | "connections"
+  | "tunnels"
   | "models"
   | "index"
   | "context"
@@ -38,6 +40,7 @@ interface SettingsCategoryItem {
   id: SettingsCategory;
   icon: ReactNode;
   labelKey: string;
+  badgeKey?: string;
 }
 
 export const SETTINGS_CATEGORY_ITEMS: SettingsCategoryItem[] = [
@@ -110,6 +113,12 @@ export const SETTINGS_CATEGORY_ITEMS: SettingsCategoryItem[] = [
     id: "agents",
     icon: <Bot size={16} />,
     labelKey: "settings.agents",
+  },
+  {
+    id: "tunnels",
+    icon: <Network size={16} />,
+    labelKey: "settings.tunnels",
+    badgeKey: "settings.experimental",
   },
   {
     id: "advanced",

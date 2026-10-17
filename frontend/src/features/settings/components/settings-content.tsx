@@ -1,4 +1,4 @@
-import { Box, Flex, IconButton, Text } from "@radix-ui/themes";
+import { Badge, Box, Flex, IconButton, Text } from "@radix-ui/themes";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
@@ -47,6 +47,7 @@ import {
   type ModelSettingsTab,
 } from "../lib/settings-route";
 import type { Settings, SettingsUpdateRequest, ThemeMode } from "../lib/settings.types";
+import { TunnelsSettings } from "./tunnels-settings";
 
 const MotionBox = motion.create(Box);
 
@@ -82,6 +83,7 @@ const CATEGORY_TITLE_KEY_MAP: Record<SettingsCategory, string> = {
   editor: "settings.editor",
   notifications: "settings.notifications",
   connections: "settings.connections",
+  tunnels: "settings.tunnels",
   models: "settings.models",
   index: "settings.index",
   context: "settings.context",
@@ -279,6 +281,7 @@ export function SettingsContent({
     activeCategory === "editor" ||
     activeCategory === "notifications" ||
     activeCategory === "connections" ||
+    activeCategory === "tunnels" ||
     activeCategory === "models" ||
     activeCategory === "index" ||
     activeCategory === "context" ||
@@ -457,6 +460,7 @@ export function SettingsContent({
                 isAgentSettingsLockLoading={isAgentSettingsLockLoading}
               />
             ) : null}
+            {activeCategory === "tunnels" ? <TunnelsSettings /> : null}
             {activeCategory === "models" ? (
               <ModelsSettings
                 activeTab={activeModelTab}
@@ -639,7 +643,22 @@ export function SettingsContent({
                               >
                                 {Icon}
                               </span>
-                              <Text size="2">{t(category.labelKey)}</Text>
+                              <Flex
+                                align="center"
+                                gap="2"
+                                className="settings-dialog-mobile-category-item-label"
+                              >
+                                <Text size="2">{t(category.labelKey)}</Text>
+                                {category.badgeKey ? (
+                                  <Badge
+                                    size="1"
+                                    variant="soft"
+                                    color="green"
+                                  >
+                                    {t(category.badgeKey)}
+                                  </Badge>
+                                ) : null}
+                              </Flex>
                             </Flex>
                             <ChevronRight
                               size={16}
