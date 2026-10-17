@@ -17,11 +17,13 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { PhotoProvider, PhotoView } from "react-photo-view";
 
+import { ModelIdSelect, Spinner, type ModelIdSelectOption } from "@/components";
+
 import "react-photo-view/dist/react-photo-view.css";
 
-import { ModelIdSelect, Spinner, type ModelIdSelectOption } from "@/components";
 import { toast } from "@/components";
 import { SimpleSelect, type SelectOption } from "@/components/select";
+import { PluginSlot } from "@/features/plugins/plugin-slot";
 import { ProviderIcon } from "@/features/settings/lib/provider-icons";
 import type { AgentPendingMessage, AgentSessionStatus, ReasoningEffort } from "@/lib/agent.types";
 import { fetchAgentComposerItems } from "@/lib/api-client";
@@ -504,6 +506,15 @@ export function AgentInput({
 
   return (
     <Box className="ai-sidebar-input-area">
+      <PluginSlot
+        slot="assistant.toolbar"
+        context={{ projectId }}
+      />
+      <PluginSlot
+        slot="assistant.above-prompt"
+        context={{ projectId }}
+        inline
+      />
       <input
         ref={imageFileInputRef}
         className="agent-composer-file-input"

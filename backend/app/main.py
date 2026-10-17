@@ -727,6 +727,7 @@ def create_app() -> FastAPI:
     )
     app.state.auth_service = AuthService(app_settings.auth_password)
     app.state.plugin_host = PluginHost(BACKEND_DATA_DIR / "plugins")
+    app.state.plugin_host.application = app
     app.state.tunnel_manager = TunnelManager(on_status_change=emit_tunnel_status)
     app.state.tunnel_frontend_available = (FRONTEND_DIST_DIR / "index.html").is_file()
     app.state.catalog_icon_proxy_service = model_icons.CatalogIconProxyService()
@@ -752,6 +753,7 @@ def create_app() -> FastAPI:
     app.include_router(projects.router, prefix=app_settings.api_v1_prefix)
     app.include_router(plugins.router, prefix=app_settings.api_v1_prefix)
     app.include_router(plugins.asset_router)
+    app.include_router(plugins.oauth_router)
     app.include_router(volumes.router, prefix=app_settings.api_v1_prefix)
     app.include_router(chapters.router, prefix=app_settings.api_v1_prefix)
     app.include_router(notes.router, prefix=app_settings.api_v1_prefix)
