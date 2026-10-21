@@ -1,4 +1,5 @@
 import {
+  Mic,
   Brain,
   Bell,
   Bot,
@@ -19,6 +20,7 @@ import {
 import type { ReactNode } from "react";
 
 export type SettingsCategory =
+  | "audio"
   | "general"
   | "personalization"
   | "editor"
@@ -99,6 +101,7 @@ export const SETTINGS_CATEGORY_ITEMS: SettingsCategoryItem[] = [
     icon: <Globe size={16} />,
     labelKey: "settings.webSearch",
   },
+  { id: "audio", icon: <Mic size={16} />, labelKey: "speech.title" },
   {
     id: "rules",
     icon: <FileText size={16} />,
