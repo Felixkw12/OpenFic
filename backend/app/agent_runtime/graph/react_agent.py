@@ -76,7 +76,9 @@ from app.agent_runtime.tools.errors import (
 from app.agent_runtime.tool_call_recovery import (
     build_malformed_tool_call_error,
     is_malformed_tool_call,
+    merge_tool_call_chunks,
     normalize_tool_input_for_schema,
+    reconcile_tool_call_chunks,
     recover_message_tool_calls,
 )
 
@@ -156,6 +158,7 @@ async def _invoke_model(
     start_time = time.perf_counter()
     first_token_ms: int | None = None
     response: AIMessage | None = None
+    streamed_tool_call_chunks: dict[int, dict[str, Any]] = {}
 
     stream = _TimedStream(
         model.astream(messages),
@@ -164,6 +167,10 @@ async def _invoke_model(
     async for chunk in stream:
         if first_token_ms is None:
             first_token_ms = int((time.perf_counter() - start_time) * 1000)
+        merge_tool_call_chunks(
+            streamed_tool_call_chunks,
+            getattr(chunk, "tool_call_chunks", None),
+        )
         response = chunk if response is None else response + chunk
 
     if response is None:
@@ -181,7 +188,13 @@ async def _invoke_model(
         ),
         tool_calls=cast(
             list[dict[str, Any]],
-            _checkpoint_safe_value(recover_message_tool_calls(response)),
+            _checkpoint_safe_value(
+                reconcile_tool_call_chunks(
+                    streamed_tool_call_chunks,
+                    id_seed=response.id,
+                )
+                or recover_message_tool_calls(response)
+            ),
         ),
         usage_metadata=(
             cast(dict[str, Any], _checkpoint_safe_value(response.usage_metadata))
