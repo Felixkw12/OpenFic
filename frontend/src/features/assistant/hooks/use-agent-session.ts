@@ -834,10 +834,8 @@ export function useAgentSession({
   );
 
   const loadChangeDetails = useCallback(
-    async (
-      targetSessionId = sessionIdRef.current ?? sessionId,
-      targetRevisionId?: string,
-    ): Promise<AgentSessionChanges | null> => {
+    async (targetRevisionId?: string): Promise<AgentSessionChanges | null> => {
+      const targetSessionId = sessionIdRef.current ?? sessionId;
       if (!targetSessionId) return null;
       try {
         const nextDetails = await fetchAgentSessionChanges(targetSessionId, targetRevisionId);
